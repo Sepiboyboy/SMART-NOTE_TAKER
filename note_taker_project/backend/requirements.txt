@@ -1,0 +1,9 @@
+
+fastapi
+uvicorn
+python-multipart
+pydantic
+requests
+kafka-python
+pymongo
+openai
