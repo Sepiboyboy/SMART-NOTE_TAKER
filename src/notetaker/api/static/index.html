@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Note Taker</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --surface: #ffffff; --border: #e3e6eb; --text: #14171c; --muted: #636b78;
+      --accent: #3b5bdb; --accent-soft: #edf1ff; --ok: #2b8a3e; --warn: #b26a00; --err: #c92a2a;
+      --radius: 12px; --shadow: 0 1px 2px rgba(16, 24, 40, .06);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1115; --surface: #171a21; --border: #262b35; --text: #e8eaee; --muted: #9098a6;
+        --accent: #7c95ff; --accent-soft: #1d2440; --ok: #69db7c; --warn: #ffc078; --err: #ff8787;
+        --shadow: none;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    header { border-bottom: 1px solid var(--border); background: var(--surface); }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 0 16px; }
+    header .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; }
+    .brand svg { color: var(--accent); }
+    header a { color: var(--muted); text-decoration: none; font-size: 14px; }
+    header a:hover { color: var(--text); }
+    main.wrap { display: grid; grid-template-columns: 340px 1fr; gap: 20px; padding-top: 24px; padding-bottom: 40px; }
+    @media (max-width: 820px) { main.wrap { grid-template-columns: 1fr; } }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+    .drop {
+      display: block; padding: 22px; text-align: center; border: 1.5px dashed var(--border);
+      border-radius: var(--radius); cursor: pointer; transition: border-color .15s, background .15s;
+    }
+    .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+    .drop strong { display: block; margin-bottom: 2px; }
+    .drop small, .muted { color: var(--muted); }
+    .actions { display: flex; gap: 8px; margin-top: 10px; }
+    button {
+      font: inherit; border: 1px solid var(--border); background: var(--surface); color: var(--text);
+      padding: 8px 12px; border-radius: 8px; cursor: pointer; flex: 1;
+    }
+    button:hover { border-color: var(--accent); }
+    button.recording { background: var(--err); border-color: var(--err); color: #fff; }
+    .message { margin-top: 10px; font-size: 14px; min-height: 1.5em; }
+    .message.error { color: var(--err); }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 22px 0 8px; }
+    .list { list-style: none; margin: 0; padding: 0; }
+    .list li { padding: 10px 14px; border-top: 1px solid var(--border); cursor: pointer; }
+    .list li:first-child { border-top: 0; }
+    .list li:hover, .list li.active { background: var(--accent-soft); }
+    .list .name { font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .list .meta { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); margin-top: 2px; }
+    .pill { font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid currentColor; }
+    .pill.completed { color: var(--ok); }
+    .pill.failed { color: var(--err); }
+    .pill.uploaded, .pill.transcribing, .pill.transcribed, .pill.summarizing { color: var(--warn); }
+    .detail { padding: 28px; min-height: 360px; }
+    .detail h1 { font-size: 24px; line-height: 1.25; margin: 0 0 6px; }
+    .detail h3 { font-size: 14px; margin: 26px 0 8px; }
+    .detail ul { margin: 0; padding-left: 20px; }
+    .detail li { margin: 4px 0; }
+    .empty { display: grid; place-items: center; text-align: center; color: var(--muted); min-height: 300px; }
+    details summary { cursor: pointer; font-weight: 600; margin-top: 26px; }
+    details p { white-space: pre-wrap; color: var(--muted); }
+    .error-box { color: var(--err); border: 1px solid var(--err); padding: 12px 14px; border-radius: 8px; margin-top: 16px; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .toolbar button { flex: 0; white-space: nowrap; }
+    .spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
+      AI Note Taker
+    </div>
+    <a href="/docs">API docs</a>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="audio/*,video/mp4,video/webm" hidden>
+      <strong>Drop an audio file</strong>
+      <small>or click to browse · mp3, m4a, wav, webm, ogg, flac</small>
+    </label>
+    <div class="actions">
+      <button type="button" id="record">● Record</button>
+    </div>
+    <div class="message" id="message" role="status"></div>
+
+    <h2>Notes</h2>
+    <ul class="list card" id="notes"><li class="muted">No notes yet.</li></ul>
+  </section>
+
+  <section class="card detail" id="detail">
+    <div class="empty"><div>Upload or record audio to create your first note.</div></div>
+  </section>
+</main>
+
+<script>
+  const IN_PROGRESS = new Set(["uploaded", "transcribing", "transcribed", "summarizing"]);
+  const STATUS_LABEL = {
+    uploaded: "Queued", transcribing: "Transcribing", transcribed: "Transcribed",
+    summarizing: "Summarizing", completed: "Done", failed: "Failed",
+  };
+  const $ = (id) => document.getElementById(id);
+  let notes = [];
+  let selectedId = null;
+  let pollTimer = null;
+
+  function el(tag, props = {}, ...children) {
+    const node = Object.assign(document.createElement(tag), props);
+    node.append(...children.filter((c) => c != null));
+    return node;
+  }
+
+  function say(text, isError = false) {
+    $("message").textContent = text;
+    $("message").className = "message" + (isError ? " error" : "");
+  }
+
+  async function api(path, options) {
+    const res = await fetch(path, options);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(typeof body.detail === "string" ? body.detail : `Request failed (${res.status})`);
+    }
+    return res.status === 204 ? null : res.json();
+  }
+
+  async function upload(file, name) {
+    const form = new FormData();
+    form.append("file", file, name || file.name);
+    say("Uploading…");
+    try {
+      const note = await api("/api/notes", { method: "POST", body: form });
+      say("");
+      selectedId = note.id;
+      await refresh();
+    } catch (err) {
+      say(err.message, true);
+    }
+  }
+
+  async function refresh() {
+    try {
+      notes = await api("/api/notes");
+    } catch (err) {
+      say(err.message, true);
+      return;
+    }
+    if (!notes.some((n) => n.id === selectedId)) selectedId = notes[0]?.id ?? null;
+    renderList();
+    renderDetail();
+    clearTimeout(pollTimer);
+    if (notes.some((n) => IN_PROGRESS.has(n.status))) pollTimer = setTimeout(refresh, 2000);
+  }
+
+  function renderList() {
+    const list = $("notes");
+    list.replaceChildren();
+    if (!notes.length) return list.append(el("li", { className: "muted", textContent: "No notes yet." }));
+    for (const n of notes) {
+      const li = el("li", { className: n.id === selectedId ? "active" : "" },
+        el("div", { className: "name", textContent: n.summary?.title || n.filename }),
+        el("div", { className: "meta" },
+          el("span", { textContent: new Date(n.created_at).toLocaleString() }),
+          el("span", { className: `pill ${n.status}`, textContent: STATUS_LABEL[n.status] })));
+      li.onclick = () => { selectedId = n.id; renderList(); renderDetail(); };
+      list.append(li);
+    }
+  }
+
+  function emptyState(text) {
+    return el("div", { className: "empty" }, el("div", { textContent: text }));
+  }
+
+  function bullets(items) {
+    return items.length ? el("ul", {}, ...items.map((t) => el("li", { textContent: t })))
+                        : el("p", { className: "muted", textContent: "None." });
+  }
+
+  function renderDetail() {
+    const box = $("detail");
+    const n = notes.find((x) => x.id === selectedId);
+    if (!n) return box.replaceChildren(emptyState("Upload or record audio to create your first note."));
+
+    const del = el("button", { type: "button", textContent: "Delete" });
+    del.onclick = async () => {
+      if (!confirm("Delete this note?")) return;
+      await api(`/api/notes/${n.id}`, { method: "DELETE" }).catch((e) => say(e.message, true));
+      selectedId = null;
+      box.replaceChildren(emptyState("Note deleted."));
+      refresh();
+    };
+
+    const header = el("div", { className: "toolbar" },
+      el("span", { className: `pill ${n.status}`, textContent: STATUS_LABEL[n.status] }), del);
+
+    const parts = [header];
+    if (n.summary) {
+      parts.push(
+        el("h1", { textContent: n.summary.title, style: "margin-top:16px" }),
+        el("p", { className: "muted", textContent: `${n.filename} · ${new Date(n.created_at).toLocaleString()}` }),
+        el("p", { textContent: n.summary.overview }),
+        el("h3", { textContent: "Key points" }), bullets(n.summary.key_points),
+        el("h3", { textContent: "Action items" }), bullets(n.summary.action_items));
+    } else if (IN_PROGRESS.has(n.status)) {
+      parts.push(el("div", { className: "empty" },
+        el("div", {}, el("div", { className: "spinner" }),
+          el("div", { textContent: `${STATUS_LABEL[n.status]} ${n.filename}…` }))));
+    } else {
+      parts.push(el("h1", { textContent: n.filename, style: "margin-top:16px" }));
+    }
+    if (n.error) parts.push(el("div", { className: "error-box", textContent: n.error }));
+    if (n.transcript) {
+      parts.push(el("details", {}, el("summary", { textContent: "Full transcript" }),
+        el("p", { textContent: n.transcript })));
+    }
+    box.replaceChildren(...parts);
+  }
+
+  // File picking and drag & drop
+  $("file").onchange = (e) => { if (e.target.files[0]) upload(e.target.files[0]); e.target.value = ""; };
+  const drop = $("drop");
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+  };
+
+  // In-browser recording
+  let recorder = null;
+  $("record").onclick = async () => {
+    const button = $("record");
+    if (recorder) return recorder.stop();
+    if (!navigator.mediaDevices?.getUserMedia) return say("Recording is not supported in this browser.", true);
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      return say("Microphone access was denied.", true);
+    }
+    const chunks = [];
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => chunks.push(e.data);
+    recorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      button.textContent = "● Record";
+      button.classList.remove("recording");
+      // Browsers record in different containers (Safari uses mp4, Firefox/Chrome webm or ogg).
+      const type = recorder.mimeType || "audio/webm";
+      const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
+      const stamp = new Date().toISOString().slice(0, 16).replace("T", " ").replace(":", "-");
+      recorder = null;
+      upload(new Blob(chunks, { type }), `Recording ${stamp}.${ext}`);
+    };
+    recorder.start();
+    button.textContent = "■ Stop recording";
+    button.classList.add("recording");
+    say("Recording…");
+  };
+
+  refresh();
+</script>
+</body>
+</html>
