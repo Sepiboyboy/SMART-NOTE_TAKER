@@ -4,7 +4,7 @@
 
 **Turn recordings into clear, structured notes, where every point and action item cites the transcript line it came from.**
 
-[![CI](https://github.com/Sepiboyboy/AI_Note_Taker/actions/workflows/ci.yml/badge.svg)](https://github.com/Sepiboyboy/AI_Note_Taker/actions/workflows/ci.yml)
+[![CI](https://github.com/Sepiboyboy/SMART-NOTE_TAKER/actions/workflows/ci.yml/badge.svg)](https://github.com/Sepiboyboy/SMART-NOTE_TAKER/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 ![Kafka](https://img.shields.io/badge/Apache%20Kafka-231F20?logo=apachekafka&logoColor=white)
@@ -101,8 +101,8 @@ Research on LLM meeting summaries highlights two failure modes. Long transcripts
 **Requirements:** Docker with Docker Compose v2.
 
 ```bash
-git clone https://github.com/Sepiboyboy/AI_Note_Taker.git
-cd AI_Note_Taker
+git clone https://github.com/Sepiboyboy/SMART-NOTE_TAKER.git
+cd SMART-NOTE_TAKER
 cp .env.example .env        # then set OPENAI_API_KEY
 docker compose up --build -d
 ```
