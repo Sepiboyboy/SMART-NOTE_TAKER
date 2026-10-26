@@ -70,6 +70,26 @@
     .error-box { color: var(--err); border: 1px solid var(--err); padding: 12px 14px; border-radius: 8px; margin-top: 16px; }
     .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
     .toolbar button { flex: 0; white-space: nowrap; }
+    .meta-line { color: var(--muted); margin: 0 0 14px; }
+    .chip { display: inline-block; font-size: 12px; padding: 0 8px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); margin-left: 6px; white-space: nowrap; vertical-align: 1px; }
+    .chip.warn { background: none; border: 1px solid var(--warn); color: var(--warn); }
+    .chip.good { background: none; border: 1px solid var(--ok); color: var(--ok); }
+    .cited { cursor: pointer; border-radius: 6px; }
+    .cited:hover { background: var(--accent-soft); }
+    .topics { list-style: none; padding: 0 !important; }
+    .topics li { display: grid; grid-template-columns: 56px 1fr; gap: 8px; }
+    .time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; padding-top: 1px; }
+    .speakers { display: flex; flex-wrap: wrap; gap: 8px; }
+    .speaker { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; }
+    .speaker input { font: inherit; border: 0; background: none; color: var(--text); width: 110px; outline: none; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+    .turn { display: grid; grid-template-columns: 56px 1fr; gap: 8px; margin: 10px 0; }
+    .turn .who { font-weight: 600; font-size: 13px; }
+    .seg { border-radius: 4px; transition: background .3s; }
+    .seg.hl { background: color-mix(in srgb, var(--warn) 30%, transparent); }
+    .s0 { --c: #4c6ef5; } .s1 { --c: #12b886; } .s2 { --c: #f76707; } .s3 { --c: #ae3ec9; } .s4 { --c: #e8590c; } .s5 { --c: #1098ad; }
+    .who, .dot { color: var(--c); background-color: var(--c); }
+    .who { background: none; }
     .spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
@@ -88,9 +108,9 @@
 <main class="wrap">
   <section>
     <label class="drop" id="drop">
-      <input type="file" id="file" accept="audio/*,video/mp4,video/webm" hidden>
+      <input type="file" id="file" accept="audio/*,video/*" hidden>
       <strong>Drop an audio file</strong>
-      <small>or click to browse · mp3, m4a, wav, webm, ogg, flac</small>
+      <small>or click to browse · mp3, m4a, wav, webm, mp4, mov and more</small>
     </label>
     <div class="actions">
       <button type="button" id="record">● Record</button>
@@ -184,48 +204,164 @@
     return el("div", { className: "empty" }, el("div", { textContent: text }));
   }
 
-  function bullets(items) {
-    return items.length ? el("ul", {}, ...items.map((t) => el("li", { textContent: t })))
-                        : el("p", { className: "muted", textContent: "None." });
+  // --- Note detail ------------------------------------------------------------------------
+
+  let rendered = "";        // Avoid re-rendering (and losing focus/scroll) while polling.
+  let transcriptOpen = false;
+
+  const fmtTime = (sec) => {
+    const s = Math.floor(sec || 0), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    const mmss = `${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    return h ? `${h}:${mmss}` : mmss;
+  };
+
+  function speakerTools(n) {
+    const labels = [...new Set(n.segments.map((s) => s.speaker))];
+    const name = (label) => n.speakers[label] || `Speaker ${label}`;
+    const cls = (label) => `s${Math.max(labels.indexOf(label), 0) % 6}`;
+    // Owners may be written as a label ("Speaker A") before speakers were renamed.
+    const ownerName = (owner) => {
+      const m = /^speaker\s+(\S+)$/i.exec(owner || "");
+      return m && n.speakers[m[1]] ? n.speakers[m[1]] : owner;
+    };
+    return { labels, name, cls, ownerName };
+  }
+
+  function showSegments(ids) {
+    if (!ids?.length) return;
+    transcriptOpen = true;
+    const box = document.querySelector("#detail details");
+    if (box) box.open = true;
+    document.querySelectorAll(".seg.hl").forEach((e) => e.classList.remove("hl"));
+    const nodes = ids.map((id) => document.getElementById(`seg-${id}`)).filter(Boolean);
+    nodes.forEach((e) => e.classList.add("hl"));
+    nodes[0]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function citedList(items, render) {
+    if (!items.length) return el("p", { className: "muted", textContent: "None." });
+    return el("ul", {}, ...items.map((item) => {
+      const li = el("li", { className: "cited", title: item.quote ? `“${item.quote}”` : "" }, ...render(item));
+      // Notes from before v1.1 have no citations at all, so there is nothing to flag.
+      if (!item.verified && item.quote) {
+        li.append(el("span", { className: "chip warn", textContent: "⚠ not found in transcript",
+          title: "The quoted evidence could not be found in the transcript. Treat with care." }));
+      }
+      li.onclick = () => showSegments(item.segment_ids);
+      return li;
+    }));
+  }
+
+  function summaryView(n, tools) {
+    const sm = n.summary;
+    const parts = [el("p", { textContent: sm.overview })];
+    if (sm.topics.length) {
+      parts.push(el("h3", { textContent: "Topics" }), el("ul", { className: "topics" },
+        ...sm.topics.map((t) => el("li", {},
+          el("span", { className: "time", textContent: fmtTime(t.start) }),
+          el("span", {}, el("strong", { textContent: t.title }), ` — ${t.summary}`)))));
+    }
+    parts.push(
+      el("h3", { textContent: "Key points" }), citedList(sm.key_points, (i) => [i.text]),
+      el("h3", { textContent: "Decisions" }), citedList(sm.decisions, (i) => [i.text]),
+      el("h3", { textContent: "Action items" }), citedList(sm.action_items, (a) => [
+        a.task,
+        a.owner ? el("span", {
+          className: a.owner_verified ? "chip" : "chip warn",
+          textContent: `${a.owner_verified ? "👤" : "👤?"} ${tools.ownerName(a.owner)}`,
+          title: a.owner_verified ? "Owner confirmed by the transcript" : "Owner not confirmed by the cited lines",
+        }) : null,
+        a.due ? el("span", { className: "chip", textContent: `📅 ${a.due}` }) : null,
+      ]));
+    return parts;
+  }
+
+  function speakersView(n, tools) {
+    return el("div", { className: "speakers" }, ...tools.labels.map((label) => {
+      const input = el("input", { value: n.speakers[label] || "", placeholder: `Speaker ${label}`,
+        ariaLabel: `Name for speaker ${label}` });
+      input.onchange = async () => {
+        try {
+          const updated = await api(`/api/notes/${n.id}/speakers`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ [label]: input.value }),
+          });
+          notes = notes.map((x) => (x.id === updated.id ? updated : x));
+          rendered = "";
+          renderList();
+          renderDetail();
+        } catch (err) { say(err.message, true); }
+      };
+      return el("label", { className: `speaker ${tools.cls(label)}` }, el("span", { className: "dot" }), input);
+    }));
+  }
+
+  function transcriptView(n, tools) {
+    const turns = [];
+    for (const seg of n.segments) {
+      const last = turns.at(-1);
+      if (last && last.speaker === seg.speaker) last.segs.push(seg);
+      else turns.push({ speaker: seg.speaker, segs: [seg] });
+    }
+    const body = n.segments.length
+      ? turns.map((t) => el("div", { className: `turn ${tools.cls(t.speaker)}` },
+          el("span", { className: "time", textContent: fmtTime(t.segs[0].start) }),
+          el("div", {}, el("div", { className: "who", textContent: tools.name(t.speaker) }),
+            ...t.segs.flatMap((seg) => [el("span", { className: "seg", id: `seg-${seg.id}`, textContent: seg.text }), " "]))))
+      : [el("p", { textContent: n.transcript })];
+    const box = el("details", { open: transcriptOpen }, el("summary", { textContent: "Full transcript" }), ...body);
+    box.ontoggle = () => { transcriptOpen = box.open; };
+    return box;
   }
 
   function renderDetail() {
     const box = $("detail");
     const n = notes.find((x) => x.id === selectedId);
-    if (!n) return box.replaceChildren(emptyState("Upload or record audio to create your first note."));
+    if (!n) {
+      rendered = "";
+      return box.replaceChildren(emptyState("Upload or record audio to create your first note."));
+    }
+    const key = `${n.id}:${n.updated_at}`;
+    if (key === rendered) return;
+    if (!rendered.startsWith(`${n.id}:`)) transcriptOpen = false;
+    rendered = key;
 
+    const tools = speakerTools(n);
     const del = el("button", { type: "button", textContent: "Delete" });
     del.onclick = async () => {
       if (!confirm("Delete this note?")) return;
       await api(`/api/notes/${n.id}`, { method: "DELETE" }).catch((e) => say(e.message, true));
       selectedId = null;
-      box.replaceChildren(emptyState("Note deleted."));
       refresh();
     };
 
-    const header = el("div", { className: "toolbar" },
-      el("span", { className: `pill ${n.status}`, textContent: STATUS_LABEL[n.status] }), del);
+    const score = n.summary?.grounding_score;
+    const badges = [el("span", { className: `pill ${n.status}`, textContent: STATUS_LABEL[n.status] })];
+    if (score != null) {
+      badges.push(el("span", {
+        className: score === 1 ? "chip good" : "chip warn",
+        textContent: `${Math.round(score * 100)}% grounded`,
+        title: "Share of summary items whose quoted evidence was found in the transcript",
+      }));
+    }
+    const parts = [el("div", { className: "toolbar" }, el("div", {}, ...badges), del)];
 
-    const parts = [header];
-    if (n.summary) {
-      parts.push(
-        el("h1", { textContent: n.summary.title, style: "margin-top:16px" }),
-        el("p", { className: "muted", textContent: `${n.filename} · ${new Date(n.created_at).toLocaleString()}` }),
-        el("p", { textContent: n.summary.overview }),
-        el("h3", { textContent: "Key points" }), bullets(n.summary.key_points),
-        el("h3", { textContent: "Action items" }), bullets(n.summary.action_items));
-    } else if (IN_PROGRESS.has(n.status)) {
+    const meta = [n.filename, new Date(n.created_at).toLocaleString()];
+    if (n.duration_seconds) meta.push(fmtTime(n.duration_seconds));
+    if (tools.labels.length) meta.push(`${tools.labels.length} speaker${tools.labels.length > 1 ? "s" : ""}`);
+    parts.push(
+      el("h1", { textContent: n.summary?.title || n.filename, style: "margin-top:16px" }),
+      el("p", { className: "meta-line", textContent: meta.join(" · ") }));
+
+    if (n.summary) parts.push(...summaryView(n, tools));
+    else if (IN_PROGRESS.has(n.status)) {
       parts.push(el("div", { className: "empty" },
         el("div", {}, el("div", { className: "spinner" }),
-          el("div", { textContent: `${STATUS_LABEL[n.status]} ${n.filename}…` }))));
-    } else {
-      parts.push(el("h1", { textContent: n.filename, style: "margin-top:16px" }));
+          el("div", { textContent: `${STATUS_LABEL[n.status]}…` }))));
     }
     if (n.error) parts.push(el("div", { className: "error-box", textContent: n.error }));
-    if (n.transcript) {
-      parts.push(el("details", {}, el("summary", { textContent: "Full transcript" }),
-        el("p", { textContent: n.transcript })));
-    }
+    if (tools.labels.length) parts.push(el("h3", { textContent: "Speakers" }), speakersView(n, tools));
+    if (n.transcript) parts.push(transcriptView(n, tools));
     box.replaceChildren(...parts);
   }
 

@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from notetaker.config import Settings
-from notetaker.models import NoteStatus
+from notetaker.models import NoteStatus, TranscriptSegment
 
 from .conftest import InMemoryNoteRepository, RecordingBus
 
@@ -81,3 +81,23 @@ def test_delete_note_removes_audio(client: TestClient, settings: Settings) -> No
     assert client.get(f"/api/notes/{note_id}").status_code == 404
     assert list(settings.storage_dir.iterdir()) == []
     assert client.delete(f"/api/notes/{note_id}").status_code == 404
+
+
+def test_rename_speakers(client: TestClient, repo: InMemoryNoteRepository) -> None:
+    note_id = upload(client).json()["id"]
+    segment = TranscriptSegment(id=0, speaker="A", start=0, end=1, text="Hi")
+    repo.notes[note_id] = repo.notes[note_id].model_copy(update={"segments": [segment]})
+
+    response = client.patch(f"/api/notes/{note_id}/speakers", json={"A": "  Sara "})
+    assert response.status_code == 200
+    assert response.json()["speakers"] == {"A": "Sara"}
+
+    # An empty name resets the label.
+    assert client.patch(f"/api/notes/{note_id}/speakers", json={"A": ""}).json()["speakers"] == {}
+
+
+def test_rename_unknown_speaker_is_rejected(client: TestClient) -> None:
+    note_id = upload(client).json()["id"]
+    response = client.patch(f"/api/notes/{note_id}/speakers", json={"Z": "Nobody"})
+    assert response.status_code == 422
+    assert client.patch("/api/notes/missing/speakers", json={}).status_code == 404

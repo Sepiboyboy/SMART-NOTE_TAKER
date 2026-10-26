@@ -3,6 +3,7 @@
 from collections.abc import Iterable
 from typing import Any, Protocol
 
+from pydantic import BaseModel
 from pymongo import DESCENDING, AsyncMongoClient, ReturnDocument
 
 from .models import Note, NoteStatus, utcnow
@@ -16,6 +17,8 @@ class NoteRepository(Protocol):
     async def list_recent(self, limit: int) -> list[Note]: ...
 
     async def delete(self, note_id: str) -> Note | None: ...
+
+    async def set_speakers(self, note_id: str, speakers: dict[str, str]) -> Note | None: ...
 
     async def transition(
         self,
@@ -57,6 +60,14 @@ class MongoNoteRepository:
     async def delete(self, note_id: str) -> Note | None:
         return _from_doc(await self._notes.find_one_and_delete({"_id": note_id}))
 
+    async def set_speakers(self, note_id: str, speakers: dict[str, str]) -> Note | None:
+        doc = await self._notes.find_one_and_update(
+            {"_id": note_id},
+            {"$set": {"speakers": speakers, "updated_at": utcnow()}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return _from_doc(doc)
+
     async def transition(
         self,
         note_id: str,
@@ -74,7 +85,16 @@ class MongoNoteRepository:
 
 
 def _dump(fields: dict[str, Any]) -> dict[str, Any]:
-    return {k: v.model_dump() if hasattr(v, "model_dump") else v for k, v in fields.items()}
+    return {k: _plain(v) for k, v in fields.items()}
+
+
+def _plain(value: Any) -> Any:
+    """Convert models (also inside lists) into the plain dicts MongoDB stores."""
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    return value
 
 
 def _to_doc(note: Note) -> dict[str, Any]:

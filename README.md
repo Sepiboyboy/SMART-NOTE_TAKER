@@ -2,7 +2,7 @@
 
 # 🎙️ AI Note Taker
 
-**Turn recordings into clear, structured notes: transcript, summary, key points and action items.**
+**Turn recordings into clear, structured notes, where every point and action item cites the transcript line it came from.**
 
 [![CI](https://github.com/Sepiboyboy/AI_Note_Taker/actions/workflows/ci.yml/badge.svg)](https://github.com/Sepiboyboy/AI_Note_Taker/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
@@ -19,16 +19,19 @@
 
 AI Note Taker is an event-driven service that takes an audio recording (a meeting, lecture or voice memo) and turns it into a note you can actually use. You upload a file or record in the browser. The audio goes through a pipeline of independent workers connected by Apache Kafka, and you get back:
 
-- a full **transcript** (OpenAI speech-to-text),
-- a **title** and short **overview**,
-- the **key points**, and
-- concrete **action items**.
+- a **transcript** with **speaker labels** and **timestamps**,
+- a **title**, a short **overview** and a timed **topic outline**,
+- the **key points** and **decisions**, and
+- **action items** with owner and due date.
 
-The summary is produced with structured outputs, so it always matches a typed schema and is never free-form text that has to be parsed.
+Every key point, decision and action item cites the transcript segments it came from, together with a verbatim quote. A deterministic check then confirms that each quote really appears there. Items that fail the check are flagged rather than silently trusted (see [Trustworthy summaries](#trustworthy-summaries)).
 
 ## Features
 
 - **Upload or record:** drag and drop a file, or record from your microphone in the web UI.
+- **Who said what:** speaker-labelled transcripts (`gpt-4o-transcribe-diarize`), with timestamps and speakers you can rename.
+- **Long recordings:** audio is re-encoded and split at pauses with ffmpeg, so a multi-hour meeting works even though OpenAI caps each request at 25 MB.
+- **Grounded summaries:** each item links to its source lines (click it to jump to them). Unsupported items and unconfirmed owners are flagged, and every note gets a *grounding score*.
 - **Asynchronous pipeline:** uploads return immediately (`202 Accepted`), and transcription and summarization run in separate, independently scalable workers.
 - **Reliable processing:** at-least-once delivery with manual offset commits. Atomic state transitions in MongoDB make every stage idempotent and safe to retry.
 - **Clear lifecycle:** each note moves through `uploaded → transcribing → transcribed → summarizing → completed`, or ends as `failed` with a readable error.
@@ -44,20 +47,21 @@ flowchart LR
     API -- create note --> DB[(MongoDB)]
     API -- notes.uploaded --> K{{Kafka}}
     K -- notes.uploaded --> T[Transcriber worker]
-    T -- speech-to-text --> OAI[OpenAI]
+    T -- "ffmpeg: normalize + split at pauses" --> T
+    T -- "diarized speech-to-text (per chunk)" --> OAI[OpenAI]
     T -- transcript --> DB
     T -- notes.transcribed --> K
     K -- notes.transcribed --> S[Summarizer worker]
-    S -- structured summary --> OAI
-    S -- summary --> DB
+    S -- "cited summary (map-reduce if long)" --> OAI
+    S -- "verify quotes, then store" --> DB
     U -. "GET /api/notes/{id} (poll)" .-> API
 ```
 
 | Component | Responsibility |
 |---|---|
 | **API** (`notetaker.api`) | Validates and stores uploads, creates the note record, publishes `notes.uploaded`, and serves the REST API and web UI. |
-| **Transcriber** (`notetaker-worker transcriber`) | Consumes `notes.uploaded`, transcribes the audio, stores the transcript, and publishes `notes.transcribed`. |
-| **Summarizer** (`notetaker-worker summarizer`) | Consumes `notes.transcribed` and generates a structured `Summary` (title, overview, key points, action items). |
+| **Transcriber** (`notetaker-worker transcriber`) | Consumes `notes.uploaded`, normalizes and chunks the audio, transcribes it with speaker labels, stores the segments, and publishes `notes.transcribed`. |
+| **Summarizer** (`notetaker-worker summarizer`) | Consumes `notes.transcribed`, generates a cited summary, verifies every citation against the transcript, and stores the result. |
 | **Kafka** | Decouples the stages. Events are keyed by note ID, so all events for one note are processed in order. |
 | **MongoDB** | Source of truth for notes and their status. |
 
@@ -68,6 +72,29 @@ Kafka events carry only the note ID. Workers always re-read the current state fr
 - **Duplicate events are harmless.** A note that has already moved past a stage is skipped.
 - **Crashes are recoverable.** Offsets are committed only after a stage finishes. If a worker dies mid-task, the event is redelivered and the stage resumes.
 - **AI failures are surfaced, not lost.** Provider errors (after the OpenAI client's built-in retries) mark the note `failed` with the reason.
+
+## Transcription
+
+1. **Normalize.** ffmpeg converts any input (mp3, m4a, wav, mov, ...) to mono 16 kHz 32 kbps mp3, about 14 MB per hour, which is plenty for speech.
+2. **Split.** Recordings longer than `CHUNK_SECONDS` (10 minutes) are cut into near-equal chunks. Each boundary moves to the nearest pause, found with ffmpeg's `silencedetect`, so words are not cut in half.
+3. **Keep speakers consistent.** A diarization model labels speakers independently in each request, so "A" in one chunk might be "B" in the next. The transcriber transcribes the first chunk, cuts a 2-10 s reference clip of each speaker, and passes those clips as `known_speaker_references` with every later chunk. Those chunks then run in parallel.
+4. **Merge.** Segment timestamps are shifted by each chunk's offset and numbered globally.
+
+> **Limitation:** OpenAI accepts at most 4 reference speakers. With more than 4 speakers, labels for the 5th and later may differ between chunks.
+
+## Trustworthy summaries
+
+Research on LLM meeting summaries highlights two failure modes. Long transcripts **lose details** ([Golia & Kalita, 2023](https://paperswithcode.com/paper/action-item-driven-summarization-of-long)). Models also **invent commitments**, such as assigning a task to someone who never agreed to it ([survey](https://arxiv.org/pdf/2212.08206); FRAME/SCOPE, EMNLP 2025 Findings). This project addresses both.
+
+**Citations by construction.** The model sees the transcript as `[S12 03:14 Sara] ...` lines. Every key point, decision and action item it writes must include `segment_ids` and a verbatim `quote`. Owners and due dates may only be filled in when the transcript states them explicitly.
+
+**Deterministic verification** (`grounding.py`, no extra model calls):
+- A quote counts as found if it appears in the cited segments, ignoring case and punctuation, with a fuzzy match (≥ 0.9) for small transcription differences.
+- If the model cited the wrong segments, the whole transcript is searched (including quotes spanning two segments), and the citation is corrected.
+- An action item's **owner** is confirmed only if they are the speaker of a cited segment or are named in it. "Priya to begin vendor onboarding" is flagged when Priya never spoke or was never assigned it.
+- The **grounding score** is the share of items whose quote was found. Unverified items are shown with a ⚠ badge. Set `DROP_UNVERIFIED_ITEMS=true` to remove them instead.
+
+**Long meetings: map, then reduce.** Transcripts over `SUMMARY_SINGLE_PASS_TOKENS` are split into sections of about 8k tokens. Cuts fall at a speaker change or a pause. Each section is processed in parallel to extract its topics, points, decisions and action items. A final step merges duplicates and writes the overview. Segment IDs are global, so citations survive the merge and are still verified at the end.
 
 ## Quick start
 
@@ -94,13 +121,14 @@ Mock mode returns a sample transcript and builds an extractive summary locally. 
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/api/notes` | Upload audio (`multipart/form-data`, field `file`). Returns `202` with the new note. |
+| `POST` | `/api/notes` | Upload audio or video (`multipart/form-data`, field `file`). Returns `202` with the new note. |
 | `GET` | `/api/notes` | List recent notes, newest first (`?limit=1..100`, default 50). |
 | `GET` | `/api/notes/{id}` | Get a note, including its status, transcript and summary. |
+| `PATCH` | `/api/notes/{id}/speakers` | Rename speakers, e.g. `{"A": "Sara"}`. An empty name resets the label. |
 | `DELETE` | `/api/notes/{id}` | Delete a note and its audio file. |
 | `GET` | `/healthz` | Liveness check. |
 
-Supported formats: `flac`, `m4a`, `mp3`, `mp4`, `mpeg`, `mpga`, `oga`, `ogg`, `wav`, `webm` (up to 25 MB by default).
+Supported formats: `aac`, `flac`, `m4a`, `mkv`, `mov`, `mp3`, `mp4`, `mpeg`, `mpga`, `oga`, `ogg`, `opus`, `wav`, `webm` (up to 200 MB and 3 hours by default).
 
 ```bash
 # Upload
@@ -116,25 +144,81 @@ curl http://localhost:8000/api/notes/8293952e...
 
 ```json
 {
-  "id": "8293952e787c4e4c9f5b7702f0f5a26a",
+  "id": "eb4c130fb6634be78986c77031dd3c8b",
   "filename": "Weekly product sync.m4a",
   "size_bytes": 2000,
   "status": "completed",
-  "transcript": "Weekly product sync for the mobile team. The mobile release is on track for Friday...",
+  "duration_seconds": 40.4,
+  "transcript": "Weekly product sync for the mobile team. The mobile release is on trac...",
+  "segments": [
+    {
+      "id": 0,
+      "speaker": "A",
+      "start": 0.0,
+      "end": 2.8,
+      "text": "Weekly product sync for the mobile team."
+    },
+    {
+      "id": 1,
+      "speaker": "A",
+      "start": 3.4,
+      "end": 9.8,
+      "text": "The mobile release is on track for Friday after QA signed off on the payment flow."
+    },
+    "..."
+  ],
+  "speakers": {
+    "A": "Omid",
+    "B": "Sara"
+  },
   "summary": {
     "title": "Weekly product sync for the mobile team",
-    "overview": "The mobile release is on track for Friday after QA signed off on the payment flow...",
+    "overview": "The mobile release is on track for Friday after QA signed off on the payment flow. Onboarding completion went up twelve percent since we shortened the sign-up form.",
+    "topics": [
+      {
+        "title": "Discussion",
+        "summary": "Weekly product sync for the mobile team.",
+        "start": 0.0
+      }
+    ],
     "key_points": [
-      "The mobile release is on track for Friday after QA signed off on the payment flow.",
-      "Onboarding completion went up twelve percent since we shortened the sign-up form."
+      {
+        "text": "The mobile release is on track for Friday after QA signed off on the payment flow.",
+        "segment_ids": [
+          1
+        ],
+        "quote": "The mobile release is on track for Friday after QA signed off on the payment flow.",
+        "verified": true
+      }
+    ],
+    "decisions": [
+      {
+        "text": "We agreed to delay the dark mode work until after the release.",
+        "segment_ids": [
+          4
+        ],
+        "quote": "We agreed to delay the dark mode work until after the release.",
+        "verified": true
+      }
     ],
     "action_items": [
-      "Sara will investigate the notification delays before Wednesday."
-    ]
+      {
+        "task": "Sara will investigate the notification delays before Wednesday.",
+        "owner": "Sara",
+        "due": "Wednesday",
+        "segment_ids": [
+          5
+        ],
+        "quote": "Sara will investigate the notification delays before Wednesday.",
+        "verified": true,
+        "owner_verified": true
+      }
+    ],
+    "grounding_score": 1.0
   },
   "error": null,
-  "created_at": "2026-10-25T21:28:11.770000Z",
-  "updated_at": "2026-10-25T21:28:11.784000Z"
+  "created_at": "2026-10-26T12:09:25.288000Z",
+  "updated_at": "2026-10-26T12:09:25.374000Z"
 }
 ```
 </details>
@@ -147,9 +231,15 @@ All settings come from environment variables or a `.env` file (see [`.env.exampl
 |---|---|---|
 | `AI_PROVIDER` | `openai` | `openai` or `mock` (offline). |
 | `OPENAI_API_KEY` | none | Required when `AI_PROVIDER=openai`. |
-| `TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | Speech-to-text model. |
-| `SUMMARY_MODEL` | `gpt-5-mini` | Model for structured summaries. |
-| `MAX_UPLOAD_MB` | `25` | Maximum upload size. |
+| `TRANSCRIPTION_MODEL` | `gpt-4o-transcribe-diarize` | Speech-to-text model. Models without `diarize` work too, but without speaker labels. |
+| `SUMMARY_MODEL` | `gpt-5-mini` | Model for cited summaries. |
+| `MAX_UPLOAD_MB` | `200` | Maximum upload size. |
+| `MAX_AUDIO_MINUTES` | `180` | Maximum recording length. |
+| `CHUNK_SECONDS` | `600` | Target chunk length for transcription. |
+| `AI_CONCURRENCY` | `3` | Parallel OpenAI requests per note. |
+| `SUMMARY_SINGLE_PASS_TOKENS` | `24000` | Longer transcripts are summarized section by section. |
+| `SUMMARY_SECTION_TOKENS` | `8000` | Target section size for long transcripts. |
+| `DROP_UNVERIFIED_ITEMS` | `false` | Remove summary items whose quote is not in the transcript, instead of flagging them. |
 | `OPENAI_MAX_RETRIES` | `3` | Retries for transient OpenAI errors. |
 | `CORS_ORIGINS` | `["*"]` | Allowed origins, as a JSON list. |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Set automatically by Docker Compose. |
@@ -160,7 +250,7 @@ All settings come from environment variables or a `.env` file (see [`.env.exampl
 ## Development
 
 ```bash
-make install   # virtualenv + dev dependencies (Python 3.12)
+make install   # virtualenv + dev dependencies (Python 3.12; ffmpeg needed for audio tests)
 make test      # pytest
 make lint      # ruff lint + format check
 make demo      # full stack with the mock AI provider
@@ -189,19 +279,22 @@ src/notetaker/
 │   └── static/         # Single-page web UI (no build step)
 ├── workers/__main__.py # `notetaker-worker {transcriber|summarizer}`
 ├── pipeline.py         # The two processing stages (transport-agnostic)
-├── ai.py               # OpenAI and mock transcriber/summarizer providers
+├── ai.py               # Chunked diarized transcription, map-reduce summarization, mock provider
+├── audio.py            # ffmpeg: normalize, measure, find pauses, split
+├── grounding.py        # Verifies summary citations against the transcript
 ├── messaging.py        # Kafka producer and at-least-once consumer loop
 ├── repository.py       # MongoDB persistence with atomic state transitions
 ├── storage.py          # Streaming, size-limited audio storage
 ├── models.py           # Note, Summary, NoteStatus, events
 └── config.py           # Typed settings (pydantic-settings)
-tests/                  # API and pipeline tests
+tests/                  # API, pipeline, audio (real ffmpeg), grounding and summarization tests
 ```
 
 ## Roadmap
 
-- Speaker diarization and timestamps in transcripts
-- Chunking for recordings longer than the provider's file limit
+- Ask questions about a note, with answers citing the transcript
+- Audio playback synced with the transcript
+- Evaluation on public meeting benchmarks (MeetingBank, QMSum)
 - Object storage (S3/MinIO) instead of a shared volume
 - Authentication and per-user notes
 - Server-sent events instead of polling for status updates

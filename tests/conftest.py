@@ -27,6 +27,13 @@ class InMemoryNoteRepository:
     async def delete(self, note_id: str) -> Note | None:
         return self.notes.pop(note_id, None)
 
+    async def set_speakers(self, note_id: str, speakers: dict[str, str]) -> Note | None:
+        note = self.notes.get(note_id)
+        if note is None:
+            return None
+        self.notes[note_id] = note.model_copy(update={"speakers": speakers, "updated_at": utcnow()})
+        return self.notes[note_id]
+
     async def transition(
         self,
         note_id: str,

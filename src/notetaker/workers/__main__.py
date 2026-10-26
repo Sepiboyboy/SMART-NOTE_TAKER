@@ -29,6 +29,7 @@ async def run(stage: str) -> None:
         transcriber=transcriber,
         summarizer=summarizer,
         transcribed_topic=settings.topic_transcribed,
+        drop_unverified=settings.drop_unverified_items,
     )
     if stage == "transcriber":
         topic, group, handler = (
@@ -44,7 +45,13 @@ async def run(stage: str) -> None:
         )
 
     try:
-        await consume(topic, group, settings.kafka_bootstrap_servers, handler)
+        await consume(
+            topic,
+            group,
+            settings.kafka_bootstrap_servers,
+            handler,
+            max_poll_interval_ms=settings.consumer_max_poll_minutes * 60 * 1000,
+        )
     finally:
         await bus.stop()
         await repo.close()

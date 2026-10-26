@@ -3,8 +3,10 @@
 import logging
 
 from .ai import Summarizer, Transcriber
+from .audio import AudioError
+from .grounding import verify
 from .messaging import EventBus
-from .models import NoteEvent, NoteStatus
+from .models import NoteEvent, NoteStatus, TranscriptSegment
 from .repository import NoteRepository
 from .storage import AudioStorage
 
@@ -20,6 +22,7 @@ class Pipeline:
         transcriber: Transcriber,
         summarizer: Summarizer,
         transcribed_topic: str,
+        drop_unverified: bool = False,
     ) -> None:
         self.repo = repo
         self.storage = storage
@@ -27,6 +30,7 @@ class Pipeline:
         self.transcriber = transcriber
         self.summarizer = summarizer
         self.transcribed_topic = transcribed_topic
+        self.drop_unverified = drop_unverified
 
     async def transcribe(self, note_id: str) -> None:
         # Claiming from TRANSCRIBING as well lets a redelivered message resume work that a
@@ -40,21 +44,34 @@ class Pipeline:
 
         try:
             transcript = await self.transcriber.transcribe(self.storage.path(note.audio_file))
+        except AudioError as exc:
+            await self._fail(note_id, NoteStatus.TRANSCRIBING, str(exc))
+            return
         except Exception as exc:
             await self._fail(note_id, NoteStatus.TRANSCRIBING, f"Transcription failed: {exc}")
             return
 
-        if not transcript:
+        if not transcript.text:
             await self._fail(
                 note_id, NoteStatus.TRANSCRIBING, "No speech was detected in the audio"
             )
             return
 
         await self.repo.transition(
-            note_id, {NoteStatus.TRANSCRIBING}, NoteStatus.TRANSCRIBED, transcript=transcript
+            note_id,
+            {NoteStatus.TRANSCRIBING},
+            NoteStatus.TRANSCRIBED,
+            transcript=transcript.text,
+            segments=transcript.segments,
+            duration_seconds=transcript.duration_seconds,
         )
         await self.bus.publish(self.transcribed_topic, NoteEvent(note_id=note_id))
-        log.info("Transcribed note %s (%d chars)", note_id, len(transcript))
+        log.info(
+            "Transcribed note %s (%d segments, %d speakers)",
+            note_id,
+            len(transcript.segments),
+            len({s.speaker for s in transcript.segments}),
+        )
 
     async def summarize(self, note_id: str) -> None:
         note = await self.repo.transition(
@@ -64,16 +81,21 @@ class Pipeline:
             log.info("Note %s is not awaiting summarization; skipping", note_id)
             return
 
+        # Notes transcribed before v1.1 have text but no segments.
+        segments = note.segments or [
+            TranscriptSegment(id=0, speaker="A", start=0.0, end=0.0, text=note.transcript)
+        ]
         try:
-            summary = await self.summarizer.summarize(note.transcript)
+            draft = await self.summarizer.summarize(segments, note.speakers)
         except Exception as exc:
             await self._fail(note_id, NoteStatus.SUMMARIZING, f"Summarization failed: {exc}")
             return
 
+        summary = verify(draft, segments, note.speakers, drop_unverified=self.drop_unverified)
         await self.repo.transition(
             note_id, {NoteStatus.SUMMARIZING}, NoteStatus.COMPLETED, summary=summary
         )
-        log.info("Summarized note %s", note_id)
+        log.info("Summarized note %s (grounding score %s)", note_id, summary.grounding_score)
 
     async def _fail(self, note_id: str, current: NoteStatus, error: str) -> None:
         log.error("Note %s failed: %s", note_id, error)

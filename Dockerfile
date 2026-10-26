@@ -6,12 +6,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN useradd --create-home --uid 1000 app
+# ffmpeg normalizes and splits audio before transcription.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 1000 app
 WORKDIR /app
 
+# Install dependencies in their own layer (against an empty package), so code changes
+# don't re-download them.
 COPY pyproject.toml README.md ./
+RUN mkdir -p src/notetaker && touch src/notetaker/__init__.py \
+    && pip install --default-timeout=60 --retries 10 hatchling . \
+    && mkdir -p /data/audio && chown app:app /data/audio
+
 COPY src ./src
-RUN pip install . && mkdir -p /data/audio && chown app:app /data/audio
+RUN pip install --no-deps --no-build-isolation --force-reinstall .
 
 USER app
 ENV STORAGE_DIR=/data/audio

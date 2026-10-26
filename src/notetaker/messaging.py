@@ -45,7 +45,13 @@ class KafkaEventBus:
         )
 
 
-async def consume(topic: str, group_id: str, bootstrap_servers: str, handler: Handler) -> None:
+async def consume(
+    topic: str,
+    group_id: str,
+    bootstrap_servers: str,
+    handler: Handler,
+    max_poll_interval_ms: int = 30 * 60 * 1000,
+) -> None:
     """Run `handler` for every event on `topic`, committing offsets only after it succeeds.
 
     This gives at-least-once delivery. If the handler raises, the process exits without
@@ -59,7 +65,7 @@ async def consume(topic: str, group_id: str, bootstrap_servers: str, handler: Ha
             enable_auto_commit=False,
             auto_offset_reset="earliest",
             # Transcribing a long recording can take minutes; don't get kicked from the group.
-            max_poll_interval_ms=15 * 60 * 1000,
+            max_poll_interval_ms=max_poll_interval_ms,
         )
     )
     log.info("Consuming %s as %s", topic, group_id)
